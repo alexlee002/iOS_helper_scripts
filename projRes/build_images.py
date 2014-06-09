@@ -12,6 +12,7 @@ from xc_helper_base import XCProject
 from xc_helper_base import StringResource
 from xc_helper_base import StringObject
 from xc_helper_base import message
+from xc_helper_base import ImagesResource
 
 class ImagesBuilder(object):
 	""" Build macros for image resources """
@@ -20,32 +21,13 @@ class ImagesBuilder(object):
 		self.xcodeproj = xcodeproj
 
 	def buildImagesMacros(self):
-		images = {}
-		duplicated = {}
-		for f in self.xcodeproj.getfiles():
-			fileType = str(self.xcodeproj.objectWithKeyPath(['lastKnownFileType'], f))
-			if fileType and fileType[0:6] == 'image.':
-				name = self.imageNameFromPath(os.path.basename(f['path']))
-				keyName = name.lower()
-				if images.has_key(keyName) and os.path.basename(images[keyName]['path']).lower() == os.path.basename(f['path']).lower():
-					if duplicated.has_key(keyName):
-						duplicated[keyName].append(f['full_path'])
-					else:
-						duplicated[keyName] = [f['full_path'], images[keyName]['path']]
-				else:
-					images[keyName] = {'name': name, 'path':f['full_path']}
-		if len(duplicated) > 0:
-			errmsg = 'Duplicated image names found:'
-			for name in duplicated.keys():
-				errmsg = errmsg + '\n' + '\n'.join(['%s' % t for t in duplicated[name]]) + '\n'
-			message().error(errmsg)
-			sys.exit(1)
+		imgResMgr = ImagesResource(self.xcodeproj)
+		images = imgResMgr.loadImagesResource()
+		images = dict((k, imgResMgr.imageNameFromPath(v[0]['path'])) for k, v in images.items())
 
 		if len(images) == 0:
-			message().info('Done!')
+			message().warning('No image resources found, Finished!')
 			return
-
-		images = dict((k, v['name']) for k, v in images.items())
 
 		autoGenDir = os.path.join(self.xcodeproj.projectHome, 'autoGen')
 		if not os.path.isdir(autoGenDir):
@@ -128,23 +110,6 @@ class ImagesBuilder(object):
 					break
 		fp.close()
 		return version
-
-	def imageNameFromPath(self, path):
-		name = ''
-		for component in path.split('.'):
-			if len(name.strip()) == 0:
-				name = component
-				pos = name.find('@')
-
-				if pos >= 0:
-					name = name[0: pos]
-
-				pos = name.find('~')
-				if pos >= 0:
-					name = name[0: pos]
-
-		return name
-
 
 
 		

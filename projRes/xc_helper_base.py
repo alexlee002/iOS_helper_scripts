@@ -15,6 +15,7 @@ import time
 from collections import OrderedDict
 from hashlib import md5
 
+
 # 用装饰器实现单例
 def singleton(cls, *args, **kw):
 	instances = {}
@@ -46,7 +47,21 @@ class message(object):
 			print '\033[1;31m%s\033[0m' % message
 
 
+#####################################################################################################################
+def trimComment(filePath):
+	trimCommentShell = os.path.normpath(os.path.abspath(os.path.join(os.path.join(os.path.dirname(__file__), '..'), 'trimComment.sh')))
+	if not os.path.isfile(trimCommentShell):
+		message().error('File "%s" not exists!' % trimCommentShell)
+		sys.exit(1)
+	p = subprocess.Popen([trimCommentShell, filePath], stdout=subprocess.PIPE)
+	stdout, stderr = p.communicate()
+	if p.returncode != 0:
+		message().error('Fail to trim comments, file: "%s"' % f['path'])
+		message().info(stderr)
+	return stdout
 
+
+#####################################################################################################################
 
 class XCProject(object):
 	def __init__(self, project_path):
@@ -100,14 +115,25 @@ class XCProject(object):
 
 
 
-	def completeObjectsPath(self, parentID, parentPath):
+	def completeObjectsPath(self, parentID, parentPath, groups=''):
 		parent = self.objectWithKeyPath(['objects', parentID])
 		if parent.has_key('path'):
-			parentPath = os.path.normpath(os.path.join(parentPath, parent['path']))
+			if parent.has_key('sourceTree') and parent['sourceTree'] == '<group>':
+				parentPath = os.path.normpath(os.path.join(parentPath, parent['path']))
+			elif parent.has_key('sourceTree') and parent['sourceTree'] == 'SOURCE_ROOT':
+				parentPath = parent['path']
 		parent['full_path'] = parentPath
+
+		if parent.has_key('isa') and parent['isa'] == 'PBXGroup':
+			if parent.has_key('path'):
+				groups = os.path.normpath(os.path.join(groups, parent['path']))
+			elif parent.has_key('name'):
+				groups = os.path.normpath(os.path.join(groups, parent['name']))
+
+		parent['groups'] = groups
 		if parent.has_key('children'):
 			for childID in parent['children']:
-				self.completeObjectsPath(str(childID), parentPath)
+				self.completeObjectsPath(str(childID), parentPath, groups)
 
 	def objectWithKeyPath(self, path=[], o=None):
 		if o == None:
@@ -123,7 +149,7 @@ class XCProject(object):
 
 		
 		
-
+#####################################################################################################################
 
 class StringObject(object):
 	XCStringsDefaultState = 0
@@ -136,7 +162,7 @@ class StringObject(object):
 		self.text = text
 		self.state = state
 
-		
+#####################################################################################################################		
 
 class StringResource(object):
 	
@@ -174,22 +200,10 @@ class StringResource(object):
 			message().error('File "%s" not exists!' % stringsFile)
 			sys.exit(1)
 
-		
-		trimCommentShell = os.path.abspath(os.path.join(os.path.dirname(__file__), 'trimComment.sh'))
-		if not os.path.isfile(trimCommentShell):
-			message().error('File "%s" not exists!' % trimCommentShell)
-			sys.exit(1)
-
-		p = subprocess.Popen([trimCommentShell, stringsFile], stdout=subprocess.PIPE)
-		stdout, stderr = p.communicate()
-		if p.returncode != 0:
-			message().error('Fail to trim comments, file: "%s"' % stringsFile)
-			message().info(stdout)
-			sys.exit(1)
-
+		fileContent = trimComment(stringsFile)
 		strings = OrderedDict()
 		duplicatedStrings = {}
-		lines = StringIO.StringIO(stdout).readlines()
+		lines = StringIO.StringIO(fileContent).readlines()
 		pattern = re.compile("^\s*\"(.+)\"\s*=\s*\"(.*)\"\s*;")
 		for l in lines:
 			matches = pattern.search(l)
@@ -325,6 +339,93 @@ class StringResource(object):
 		m.update(content)
 		return m.hexdigest()
 
+
+#####################################################################################################################
+class ImagesResource(object):
+	""" images resource base operations """
+	def __init__(self, xcodeproj):
+		super(ImagesResource, self).__init__()
+		self.xcodeproj = xcodeproj
+
+	def loadImagesResource(self, ignoreGroupPaths=('External_Libraries_and_Frameworks')):
+		imageResources = {}
+		duplicatedImages = {}
+		for f in [f for f in self.xcodeproj.getfiles() if str(self.xcodeproj.objectWithKeyPath(['lastKnownFileType'], f))[0:6] == 'image.']:
+			shouldIgnore = False
+			for ig in ignoreGroupPaths:
+				if self.isParentFolder(ig, f['groups']):
+					shouldIgnore = True
+					break
+			if shouldIgnore:
+				message().warning('Ignore file:%s' % f['full_path'])
+				continue
+
+			imgName = self.imageNameFromPath(os.path.basename(f['path'])).lower()
+			if imageResources.has_key(imgName) and os.path.basename(f['path']).lower() in [os.path.basename(fn['path']).lower() for fn in imageResources[imgName]]:
+				if not duplicatedImages.has_key(imgName):
+					duplicatedImages[imgName] = []
+				duplicatedImages[imgName].append(f['full_path'])
+			else:
+				if not imageResources.has_key(imgName):
+					imageResources[imgName] = []
+				imageResources[imgName].append(f)
+
+		if len(duplicatedImages) > 0:
+			errmsg = 'Duplicated image names found:'
+			for name in duplicatedImages.keys():
+				errmsg = errmsg + '\n' + '\n'.join(['%s' % t for t in duplicatedImages[name]]) + '\n'
+			message().error(errmsg)
+			sys.exit(1)
+
+		notFoundImages = []
+		for arr in imageResources.values():
+			for f in arr:
+				imagepath = os.path.join(self.xcodeproj.projectHome, f['full_path'])
+				if not os.path.isfile(imagepath):
+					notFoundImages.append(f['full_path'])
+		if len(notFoundImages) > 0:
+			errmsg = 'Image files not found:\n' + '\n'.join('%s' % f for f in notFoundImages) + '\n'
+			message().error(errmsg)
+			sys.exit(1)
+
+
+		return imageResources
+				
+
+
+
+	def imageNameFromPath(self, path):
+		name = ''
+		for component in path.split('.'):
+			if len(name.strip()) == 0:
+				name = component
+				pos = name.find('@')
+
+				if pos >= 0:
+					name = name[0: pos]
+
+				pos = name.find('~')
+				if pos >= 0:
+					name = name[0: pos]
+
+		return name
+
+	def isParentFolder(self, parent, child):
+		if not parent or not child:
+			return False
+
+		parent = os.path.normpath(parent)
+		child = os.path.normpath(child)
+
+		if parent == child:
+			return True
+
+		if len(parent) < len(child):
+			parent = parent + '/'
+			if child[0:len(parent)] == parent:
+				return True
+
+		return False
 
 
 

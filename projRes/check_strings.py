@@ -10,39 +10,25 @@ import os
 import time
 import sys
 import re
-from xc_helper_base import XCProject
-from xc_helper_base import StringResource
-from xc_helper_base import StringObject
-from xc_helper_base import message
-from build_strings import StringsBuilder
+from xc_helper_base import *
+from build_strings import *
 
 from collections import OrderedDict
 
 #################################################
-def threadWorker(strChker, tid):
+def threadWorker(inspector, tid):
 	message().info('Thread-#%d started' % tid)
-	stringResBuilder = StringsBuilder(strChker.xcodeproj)
-
-	trimCommentShell = os.path.abspath(os.path.join(os.path.dirname(__file__), 'trimComment.sh'))
-	if not os.path.isfile(trimCommentShell):
-		message().error('File "%s" not exists!' % trimCommentShell)
-		sys.exit(1)
+	stringResBuilder = StringsBuilder(inspector.xcodeproj)
 
 	while True:
 
-		f = strChker.nextFile()
+		f = inspector.nextFile()
 		if f == None:
 			message().info('Thread-#%d Done' % tid)
 			return
 
-		p = subprocess.Popen([trimCommentShell, f['path']], stdout=subprocess.PIPE)
-		stdout, stderr = p.communicate()
-		if p.returncode != 0:
-			message().error('Fail to trim comments, file: "%s"' % f['path'])
-			message().info(stdout)
-			continue
-
-		strings = strChker.availableStrings()
+		fileContent = trimComment(f['path'])
+		strings = inspector.availableStrings()
 		for name in strings:
 			if f['type'] == 'sourcecode':
 				grepRegex = '\\b%s\\b|\\b%s\\b' % (stringResBuilder.macroNameForString(name), name)
@@ -50,20 +36,20 @@ def threadWorker(strChker, tid):
 			elif f['type'] == 'plist':
 				grepRegex = '\\b%s\\b' % name
 
-			if re.search(grepRegex, stdout):
-				strChker.markStringBeingUsed(name)
+			if re.search(grepRegex, fileContent):
+				inspector.markStringBeingUsed(name)
 
 		os.write(1, '#')
 
 
 #####################################################################################
-class StringsChecker(object):
-	"""docstring for StringsChecker"""
+class StringsInspector(object):
+	"""docstring for StringsInspector"""
 
 	XCStringsBeingUsedState = 0xff
 
 	def __init__(self, xcodeproj):
-		super(StringsChecker, self).__init__()
+		super(StringsInspector, self).__init__()
 		self.xcodeproj = xcodeproj
 		self.strings = StringResource(xcodeproj).loadConfig()
 
@@ -105,7 +91,7 @@ class StringsChecker(object):
 
 		counter = 0
 		for key, strobj in self.stringsObjects.items():
-			if strobj.state != StringsChecker.XCStringsBeingUsedState:
+			if strobj.state != StringsInspector.XCStringsBeingUsedState:
 				strobj.state = StringObject.XCStringsUnusedState
 				counter = counter + 1
 
@@ -142,7 +128,7 @@ class StringsChecker(object):
 
 	def availableStrings(self):
 		self.stringsLock.acquire()
-		dic = OrderedDict((k, v) for k, v in self.stringsObjects.items() if v.state != StringsChecker.XCStringsBeingUsedState)
+		dic = OrderedDict((k, v) for k, v in self.stringsObjects.items() if v.state != StringsInspector.XCStringsBeingUsedState)
 		self.stringsLock.release()
 		return dic.keys()
 
@@ -150,7 +136,7 @@ class StringsChecker(object):
 	def markStringBeingUsed(self, strName):
 		self.stringsLock.acquire()
 		if self.stringsObjects.has_key(strName):
-			self.stringsObjects[strName].state = StringsChecker.XCStringsBeingUsedState
+			self.stringsObjects[strName].state = StringsInspector.XCStringsBeingUsedState
 		self.stringsLock.release()
 
 
